@@ -4,6 +4,9 @@ import "./globals.css";
 import { createClient } from "@/lib/supabase/server";
 import SignOutButton from "@/components/SignOutButton";
 import PWARegister from "@/components/PWARegister";
+import LanguageSwitcher from "@/components/LanguageSwitcher";
+import { getServerDictionary } from "@/lib/i18n/server";
+import { dirFor } from "@/lib/i18n/config";
 
 export const metadata: Metadata = {
   title: "Sahayata — Community Support Redistribution",
@@ -42,8 +45,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     isAdmin = profile?.role === "admin";
   }
 
+  const { locale, dict } = getServerDictionary();
+
   return (
-    <html lang="en">
+    <html lang={locale} dir={dirFor(locale)}>
       <body className="min-h-screen bg-neutral-50 text-neutral-900">
         <PWARegister />
         <header className="border-b border-neutral-200 bg-white">
@@ -53,22 +58,22 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             </Link>
             <nav className="flex items-center gap-4 text-sm">
               <Link href="/dashboard" className="text-neutral-600 hover:text-neutral-900">
-                Dashboard
+                {dict.nav.dashboard}
               </Link>
               {user ? (
                 <>
                   <Link href="/requests/new" className="text-neutral-600 hover:text-neutral-900">
-                    Request support
+                    {dict.nav.requestSupport}
                   </Link>
                   <Link href="/account" className="text-neutral-600 hover:text-neutral-900">
-                    Account
+                    {dict.nav.account}
                   </Link>
                   {isAdmin && (
                     <Link
                       href="/admin/mishrin-ledger"
                       className="text-amber-700 hover:text-amber-900"
                     >
-                      Admin
+                      {dict.nav.admin}
                     </Link>
                   )}
                   <SignOutButton />
@@ -76,13 +81,14 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               ) : (
                 <>
                   <Link href="/sign-in" className="text-neutral-600 hover:text-neutral-900">
-                    Sign in
+                    {dict.nav.signIn}
                   </Link>
                   <Link href="/sign-up" className="btn-primary">
-                    Sign up
+                    {dict.nav.signUp}
                   </Link>
                 </>
               )}
+              <LanguageSwitcher current={locale} />
             </nav>
           </div>
         </header>
