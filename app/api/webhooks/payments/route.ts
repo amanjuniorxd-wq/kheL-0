@@ -9,17 +9,6 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? "", {
   apiVersion: "2024-06-20",
 });
 
-/**
- * Single inbound endpoint for every payment gateway (Stripe, Razorpay,
- * Cashfree, PayPal/Venmo). Point each provider's dashboard webhook config
- * here: https://<your-domain>/api/webhooks/payments
- *
- * The provider is identified by which signature header is present, then
- * verified with that provider's own scheme before anything is trusted —
- * a request with none of the recognized headers is rejected outright.
- * Every path funnels into creditContribution(), which is idempotent on
- * provider_payment_id, so provider retries never double-credit.
- */
 export async function POST(req: Request) {
   const rawBody = await req.text();
   const headers = req.headers;
@@ -88,7 +77,7 @@ async function handleRazorpay(rawBody: string, signature: string) {
       donorId: donorId || null,
       requestId: payment.notes?.request_id || null,
       currency: (payment.currency ?? "INR").toUpperCase(),
-      extraMetadata: { method: payment.method }, // upi, card, netbanking, wallet, ...
+      extraMetadata: { method: payment.method },
     });
   }
 
@@ -115,7 +104,7 @@ async function handleCashfree(rawBody: string, signature: string | null, timesta
       donorId,
       requestId: tags.request_id || null,
       currency: order?.order_currency ?? "INR",
-      extraMetadata: { method: payment.payment_group }, // upi, credit_card, debit_card, ...
+      extraMetadata: { method: payment.payment_group },
     });
   }
 
@@ -135,18 +124,27 @@ async function handlePayPal(rawBody: string, headers: Headers) {
     const custom = JSON.parse(resource.custom_id || "{}") as {
       donor_id?: string;
       request_id?: string;
+      origin_amount_inr?: number | null;
     };
     const donorId = custom.donor_id && custom.donor_id !== "anonymous" ? custom.donor_id : null;
     const fundingSource = resource.payment_source && Object.keys(resource.payment_source)[0];
 
+    const hasOriginInr = typeof custom.origin_amount_inr === "number";
+    const creditAmount = hasOriginInr ? (custom.origin_amount_inr as number) : Number(resource.amount.value);
+    const creditCurrency = hasOriginInr ? "INR" : resource.amount.currency_code;
+
     await creditContribution({
       provider: fundingSource === "venmo" ? "venmo" : "paypal",
       providerPaymentId: resource.id,
-      amount: Number(resource.amount.value),
+      amount: creditAmount,
       donorId,
       requestId: custom.request_id || null,
-      currency: resource.amount.currency_code,
-      extraMetadata: { funding_source: fundingSource ?? "paypal" },
+      currency: creditCurrency,
+      extraMetadata: {
+        funding_source: fundingSource ?? "paypal",
+        settled_amount: resource.amount.value,
+        settled_currency: resource.amount.currency_code,
+      },
     });
   }
 

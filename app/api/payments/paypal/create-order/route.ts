@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createPayPalOrder } from "@/lib/payments/paypal";
+import { convertInrToUsd } from "@/lib/payments/fx";
 
 export async function POST(req: Request) {
   const supabase = createClient();
@@ -8,10 +9,9 @@ export async function POST(req: Request) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  const { amount, requestId, currency } = (await req.json()) as {
+  const { amount, requestId } = (await req.json()) as {
     amount: number;
     requestId?: string;
-    currency?: string;
   };
 
   if (!amount || amount <= 0) {
@@ -19,13 +19,16 @@ export async function POST(req: Request) {
   }
 
   try {
+    const { usd, inrPerUsd } = await convertInrToUsd(amount);
+
     const order = await createPayPalOrder({
-      amount,
-      currency,
+      amount: usd,
+      currency: "USD",
       donorId: user?.id ?? null,
       requestId,
+      originAmountInr: amount,
     });
-    return NextResponse.json({ orderId: order.id });
+    return NextResponse.json({ orderId: order.id, usd, inrPerUsd });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "PayPal order failed" },

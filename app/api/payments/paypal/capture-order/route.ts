@@ -2,12 +2,6 @@ import { NextResponse } from "next/server";
 import { capturePayPalOrder } from "@/lib/payments/paypal";
 import { creditContribution } from "@/lib/payments/credit";
 
-/**
- * Called from the client's PayPalButtons onApprove handler for a fast UX
- * response. Safe to call even though the unified webhook also credits the
- * same payment: creditContribution() is idempotent on provider_payment_id,
- * so whichever path lands first wins and the other is a no-op.
- */
 export async function POST(req: Request) {
   const { orderId, fundingSource } = (await req.json()) as {
     orderId: string;
@@ -30,16 +24,25 @@ export async function POST(req: Request) {
     const custom = JSON.parse(purchaseUnit.custom_id || "{}") as {
       donor_id?: string;
       request_id?: string;
+      origin_amount_inr?: number | null;
     };
+
+    const hasOriginInr = typeof custom.origin_amount_inr === "number";
+    const creditAmount = hasOriginInr ? (custom.origin_amount_inr as number) : Number(captureNode.amount.value);
+    const creditCurrency = hasOriginInr ? "INR" : captureNode.amount.currency_code;
 
     const result = await creditContribution({
       provider: fundingSource === "venmo" ? "venmo" : "paypal",
       providerPaymentId: captureNode.id,
-      amount: Number(captureNode.amount.value),
+      amount: creditAmount,
       donorId: custom.donor_id && custom.donor_id !== "anonymous" ? custom.donor_id : null,
       requestId: custom.request_id || null,
-      currency: captureNode.amount.currency_code,
-      extraMetadata: { funding_source: fundingSource ?? "paypal" },
+      currency: creditCurrency,
+      extraMetadata: {
+        funding_source: fundingSource ?? "paypal",
+        settled_amount: captureNode.amount.value,
+        settled_currency: captureNode.amount.currency_code,
+      },
     });
 
     return NextResponse.json({ status: "COMPLETED", credited: result.credited });

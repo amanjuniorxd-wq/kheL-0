@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { loadStripe } from "@stripe/stripe-js";
 import { PayPalScriptProvider, PayPalButtons } from "@paypal/react-paypal-js";
 import type { SupportRequest } from "@/lib/types";
@@ -25,7 +25,6 @@ const GATEWAY_LABEL: Record<Gateway, string> = {
   paypal: "PayPal / Venmo",
 };
 
-/** Only offer gateways whose public key is actually configured. */
 const AVAILABLE_GATEWAYS = (Object.keys(GATEWAY_LABEL) as Gateway[]).filter((g) => {
   if (g === "stripe") return !!process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY;
   if (g === "razorpay") return !!process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID;
@@ -94,9 +93,8 @@ export default function CheckoutModal({
         name: "Sahayata",
         description: `Fund: ${request.title}`,
         order_id: orderId,
-        // Surfaces UPI (incl. GPay/PhonePe/Paytm/BHIM intent + QR) first.
         config: { display: { blocks: { upi: { instruments: [{ method: "upi" }] } }, sequence: ["block.upi"], preferences: { show_default_blocks: true } } },
-        handler: () => onClose(), // durable credit happens via the webhook
+        handler: () => onClose(),
         theme: { color: "#1f7a5c" },
       });
       rzp.open();
@@ -128,7 +126,7 @@ export default function CheckoutModal({
         paymentSessionId,
         redirectTarget: "_modal",
       });
-      onClose(); // durable credit happens via the webhook
+      onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Payment failed");
     } finally {
@@ -208,6 +206,23 @@ function PayPalCheckout({
   onDone: () => void;
   onError: (message: string) => void;
 }) {
+  const [inrPerUsd, setInrPerUsd] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/payments/paypal/rate")
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled && typeof data.inrPerUsd === "number") setInrPerUsd(data.inrPerUsd);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const approxUsd = inrPerUsd ? (amount / inrPerUsd).toFixed(2) : null;
+
   return (
     <PayPalScriptProvider
       options={{
@@ -217,6 +232,10 @@ function PayPalCheckout({
         enableFunding: "venmo",
       }}
     >
+      <p className="mb-2 text-xs text-neutral-500">
+        Charged in USD — PayPal doesn&rsquo;t settle in ₹ for this account.
+        {approxUsd ? ` ₹${amount} ≈ $${approxUsd}.` : ""}
+      </p>
       <div className="space-y-2">
         {(["paypal", "venmo"] as const).map((fundingSource) => (
           <PayPalButtons
@@ -227,7 +246,7 @@ function PayPalCheckout({
               const res = await fetch("/api/payments/paypal/create-order", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ amount, requestId, currency: "USD" }),
+                body: JSON.stringify({ amount, requestId }),
               });
               const { orderId, error } = await res.json();
               if (error) throw new Error(error);
