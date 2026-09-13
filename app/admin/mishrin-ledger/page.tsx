@@ -4,13 +4,15 @@ import RequestOverridePanel from "./RequestOverridePanel";
 import LiveFloorFeed from "./LiveFloorFeed";
 import LedgerAuditTable from "./LedgerAuditTable";
 import VerificationPanel from "./VerificationPanel";
+import AdminsPanel from "./AdminsPanel";
+import type { Profile } from "@/lib/types";
 
 export default async function MishrinLedgerAdminPage() {
   // requireAdmin() already ran in app/admin/layout.tsx for this whole
   // route subtree — no need to repeat the check here.
   const supabase = createClient();
 
-  const [{ data: pendingRequests }, { data: ledgerEntries }] = await Promise.all([
+  const [{ data: pendingRequests }, { data: ledgerEntries }, { data: admins }] = await Promise.all([
     supabase
       .from("assistance_requests")
       .select("*")
@@ -21,6 +23,11 @@ export default async function MishrinLedgerAdminPage() {
       .select("*, delegate:profiles!delegate_id(full_name, verification_tier)")
       .order("id", { ascending: false })
       .limit(25),
+    supabase
+      .from("profiles")
+      .select("*")
+      .eq("role", "admin")
+      .order("updated_at", { ascending: false }),
   ]);
 
   return (
@@ -40,7 +47,10 @@ export default async function MishrinLedgerAdminPage() {
 
       <RequestOverridePanel requests={pendingRequests ?? []} />
 
-      <VerificationPanel />
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <VerificationPanel />
+        <AdminsPanel initialAdmins={(admins ?? []) as Profile[]} />
+      </div>
 
       <LedgerAuditTable initialEntries={ledgerEntries ?? []} />
     </div>

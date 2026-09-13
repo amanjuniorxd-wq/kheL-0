@@ -5,7 +5,7 @@ import { requireAdmin } from "@/lib/auth/admin";
 import { createClient, createAdminClient } from "@/lib/supabase/server";
 import { verifyMishrinChain } from "@/lib/mishrin/server";
 import type { MishrinEntry } from "@/lib/mishrin/types";
-import type { RequestStatus, VerificationTier, Profile } from "@/lib/types";
+import type { RequestStatus, VerificationTier, ProfileRole, Profile } from "@/lib/types";
 
 /**
  * Approve / reject / flag a request. Runs as the signed-in admin's own
@@ -157,5 +157,47 @@ export async function grantVerificationBadge(targetId: string, tier: Verificatio
   revalidatePath("/admin/mishrin-ledger");
   revalidatePath("/dashboard");
   revalidatePath("/account");
+  return data as Profile;
+}
+
+/**
+ * Lists every profile currently holding the admin role, so the panel can
+ * show who has access without a SQL console. Profiles are publicly
+ * readable (migration 0001's "viewable by everyone" policy), so this
+ * runs on the caller's own session — requireAdmin() just gates the page.
+ */
+export async function listAdmins() {
+  await requireAdmin();
+  const supabase = createClient();
+
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("*")
+    .eq("role", "admin")
+    .order("updated_at", { ascending: false });
+
+  if (error) throw new Error(error.message);
+  return (data ?? []) as Profile[];
+}
+
+/**
+ * Promotes or demotes a user's role. Goes through set_user_role()
+ * (migration 0009) rather than a direct UPDATE, so it only ever touches
+ * the `role` column, refuses to demote the last remaining admin, and
+ * writes its own ledger entry — the same pattern grantVerificationBadge()
+ * uses for set_verification_tier().
+ */
+export async function setUserRole(targetId: string, role: ProfileRole) {
+  await requireAdmin();
+  const supabase = createClient();
+
+  const { data, error } = await supabase.rpc("set_user_role", {
+    p_target_id: targetId,
+    p_role: role,
+  });
+
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/admin/mishrin-ledger");
   return data as Profile;
 }
