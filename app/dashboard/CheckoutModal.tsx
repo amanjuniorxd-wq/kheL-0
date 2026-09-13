@@ -25,6 +25,7 @@ const GATEWAY_LABEL: Record<Gateway, string> = {
   paypal: "PayPal / Venmo",
 };
 
+/** Only offer gateways whose public key is actually configured. */
 const AVAILABLE_GATEWAYS = (Object.keys(GATEWAY_LABEL) as Gateway[]).filter((g) => {
   if (g === "stripe") return !!process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY;
   if (g === "razorpay") return !!process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID;
@@ -42,6 +43,7 @@ export default function CheckoutModal({
 }) {
   const [amount, setAmount] = useState(1000);
   const [gateway, setGateway] = useState<Gateway>(AVAILABLE_GATEWAYS[0] ?? "razorpay");
+  const [recurring, setRecurring] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -68,6 +70,35 @@ export default function CheckoutModal({
     } catch (err) {
       setError(err instanceof Error ? err.message : "Payment failed");
     } finally {
+      setLoading(false);
+    }
+  }
+
+  /**
+   * Opt-in monthly donation: hands off to Stripe's own hosted Checkout
+   * page for card entry + confirmation. The donor explicitly authorizes
+   * the subscription there; every renewal after that is a normal Stripe
+   * billing cycle, and they can cancel anytime from /dashboard/recurring.
+   */
+  async function handleStripeSubscription() {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/payments/stripe/create-subscription", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amount,
+          requestId: request.id,
+          requestTitle: request.title,
+          origin: window.location.origin,
+        }),
+      });
+      const { url, error: apiError } = await res.json();
+      if (apiError) throw new Error(apiError);
+      window.location.href = url;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not start recurring donation");
       setLoading(false);
     }
   }
@@ -134,6 +165,14 @@ export default function CheckoutModal({
     }
   }
 
+  function handlePrimaryAction() {
+    if (gateway === "stripe") {
+      return recurring ? handleStripeSubscription() : handleStripe();
+    }
+    if (gateway === "cashfree") return handleCashfree();
+    return handleRazorpay();
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl">
@@ -164,6 +203,17 @@ export default function CheckoutModal({
           ))}
         </div>
 
+        {gateway === "stripe" && (
+          <label className="mb-4 flex items-center gap-2 text-sm text-neutral-700">
+            <input
+              type="checkbox"
+              checked={recurring}
+              onChange={(e) => setRecurring(e.target.checked)}
+            />
+            Make this a monthly donation
+          </label>
+        )}
+
         {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
 
         {gateway === "paypal" && process.env.NEXT_PUBLIC_PAYPAL_CLIENT_ID ? (
@@ -181,12 +231,14 @@ export default function CheckoutModal({
             <button
               type="button"
               disabled={loading}
-              onClick={
-                gateway === "stripe" ? handleStripe : gateway === "cashfree" ? handleCashfree : handleRazorpay
-              }
+              onClick={handlePrimaryAction}
               className="btn-primary"
             >
-              {loading ? "Processing…" : `Pay ₹${amount}`}
+              {loading
+                ? "Processing…"
+                : recurring && gateway === "stripe"
+                ? `Start monthly ₹${amount}`
+                : `Pay ₹${amount}`}
             </button>
           </div>
         )}

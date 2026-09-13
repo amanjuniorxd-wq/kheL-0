@@ -4,11 +4,23 @@ import crypto from "crypto";
 import { creditContribution } from "@/lib/payments/credit";
 import { verifyCashfreeWebhook } from "@/lib/payments/cashfree";
 import { verifyPayPalWebhook } from "@/lib/payments/paypal";
+import { createAdminClient } from "@/lib/supabase/server";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? "", {
   apiVersion: "2024-06-20",
 });
 
+/**
+ * Single inbound endpoint for every payment gateway (Stripe, Razorpay,
+ * Cashfree, PayPal/Venmo). Point each provider's dashboard webhook config
+ * here: https://<your-domain>/api/webhooks/payments
+ *
+ * The provider is identified by which signature header is present, then
+ * verified with that provider's own scheme before anything is trusted --
+ * a request with none of the recognized headers is rejected outright.
+ * Every path funnels into creditContribution(), which is idempotent on
+ * provider_payment_id, so provider retries never double-credit.
+ */
 export async function POST(req: Request) {
   const rawBody = await req.text();
   const headers = req.headers;
@@ -49,6 +61,69 @@ async function handleStripe(rawBody: string, signature: string) {
       requestId: intent.metadata.request_id || null,
       currency: intent.currency.toUpperCase(),
     });
+  }
+
+  // A donor just finished Stripe Checkout in subscription mode (see
+  // /api/payments/stripe/create-subscription). This only persists the
+  // recurring_donations record -- the actual money is credited by
+  // invoice.payment_succeeded below (fired for every billing cycle,
+  // including the first), so this never double-credits.
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object as Stripe.Checkout.Session;
+    if (session.mode === "subscription" && session.subscription && session.customer) {
+      const admin = createAdminClient();
+      const donorId = session.metadata?.donor_id || null;
+      const requestId = session.metadata?.request_id || null;
+
+      await admin.from("recurring_donations").upsert(
+        {
+          donor_id: donorId,
+          request_id: requestId,
+          amount: (session.amount_total ?? 0) / 100,
+          currency: (session.currency ?? "inr").toUpperCase(),
+          stripe_customer_id: String(session.customer),
+          stripe_subscription_id: String(session.subscription),
+          status: "active",
+        },
+        { onConflict: "stripe_subscription_id" }
+      );
+    }
+  }
+
+  // Fired for every subscription billing cycle, including the first --
+  // this is the single place a recurring donation actually becomes a
+  // credited transaction + mishrin ledger entry, mirroring one-time
+  // contributions via the same creditContribution() call.
+  if (event.type === "invoice.payment_succeeded") {
+    const invoice = event.data.object as Stripe.Invoice;
+    if (invoice.subscription) {
+      const subscription = await stripe.subscriptions.retrieve(String(invoice.subscription));
+      const donorId = subscription.metadata?.donor_id || null;
+      const requestId = subscription.metadata?.request_id || null;
+
+      await creditContribution({
+        provider: "stripe",
+        providerPaymentId:
+          typeof invoice.payment_intent === "string" ? invoice.payment_intent : invoice.id,
+        amount: invoice.amount_paid / 100,
+        donorId,
+        requestId,
+        currency: invoice.currency.toUpperCase(),
+        extraMetadata: { recurring: true, invoice_id: invoice.id },
+      });
+    }
+  }
+
+  // Subscription cancelled (by us via the dashboard action, or for
+  // repeated payment failures on Stripe's side) -- keep our record in
+  // sync so the UI stops offering "Cancel" on something already gone.
+  if (event.type === "customer.subscription.deleted") {
+    const subscription = event.data.object as Stripe.Subscription;
+    const admin = createAdminClient();
+    await admin
+      .from("recurring_donations")
+      .update({ status: "canceled", canceled_at: new Date().toISOString() })
+      .eq("stripe_subscription_id", subscription.id);
   }
 
   return NextResponse.json({ received: true });
